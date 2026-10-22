@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atlas sanitaire départemental Cameroun</title>
+  <meta name="description" content="Storymap de l'atlas sanitaire départemental du Cameroun : formations sanitaires, population et accessibilité, par région et par département.">
+  <link href="vendor/maplibre/maplibre-gl.css" rel="stylesheet">
+  <link href="css/style-10.css" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <aside id="panel" aria-label="Récit">
+      <header id="masthead">
+        <div class="brand">
+          <img id="logo" src="img/logo.png" alt="" onerror="this.remove()">
+          <div id="lang-switch" role="group" aria-label="Langue / Language">
+            <button data-lang="fr">FR</button><button data-lang="en">EN</button>
+          </div>
+        </div>
+        <p class="ministry" data-i18n="ministry">MINISTERE DE LA SANTE PUBLIQUE: Direction de l'Organisation des Soins et de la Technologie Sanitaire</p>
+        <h1 data-i18n="h1">Atlas sanitaire départemental</h1>
+        <div class="filter">
+          <label for="region-select" data-i18n="region">Région</label>
+          <select id="region-select">
+            <option value="">Cameroun vue nationale</option>
+          </select>
+        </div>
+        <nav id="dept-nav" aria-label="Départements"></nav>
+      </header>
+      <div id="chapters"></div>
+      <footer id="credits">
+        <p data-i18n="credits1">Source : Cellule des Informations Sanitaires (CIS), MINSANTE. Population estimée 2026.</p>
+        <p data-i18n="credits2">Fond de carte : Esri World Topographic. Réalisé avec MapLibre GL (open source).</p>
+      </footer>
+    </aside>
+    <main id="map-wrap">
+      <div id="map" role="region" aria-label="Carte"></div>
+      <div id="inset" aria-hidden="true"></div>
+      <div id="stale-warning" hidden>Les fichiers de données chargés sont d'une ancienne version : les fiches et les FOSA filtrées peuvent être vides. Mettez à jour le dossier <code>data</code>, puis rechargez la page (Ctrl + F5).</div>
+      <div id="focus-bar" hidden><span></span><button id="focus-back" data-i18n="backDept">← Tout le département</button></div>
+      <div id="legend" class="open">
+        <button id="legend-toggle" aria-expanded="true" data-i18n="legend">Légende</button>
+        <div id="legend-body"></div>
+      </div>
+    </main>
+  </div>
+  <div id="lang-splash" hidden>
+    <div class="splash-card">
+      <img src="img/logo.png" alt="" onerror="this.remove()">
+      <p class="splash-title">Atlas sanitaire départemental<br><span>Departmental health atlas</span></p>
+      <p class="splash-q">Choisissez votre langue · Choose your language</p>
+      <div class="splash-btns"><button data-lang="fr">Français</button><button data-lang="en">English</button></div>
+    </div>
+  </div>
+  <script src="vendor/maplibre/maplibre-gl.js"></script>
+  <script src="js/i18n-10.js"></script>
+  <script src="js/app-12.js"></script>
+</body>
+</html>
