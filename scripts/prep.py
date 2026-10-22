@@ -102,6 +102,22 @@ for d in dep.itertuples():
     r_clip = gpd.clip(routes[routes.intersects(buf)], buf)
     w_clip = gpd.clip(rivers[rivers.intersects(buf)], buf)
     tol = 0.0004
+    # --- relations district <-> commune (recouvrement > 5 % de la plus petite des deux surfaces)
+    ds_m, com_m = in_ds_geo.to_crs("ESRI:102022"), in_com.to_crs("ESRI:102022")
+    d2c = {n: [] for n in in_ds_geo.District_S}
+    c2d = {n: [] for n in in_com.Nom_commun}
+    for dn, dg in zip(in_ds_geo.District_S, ds_m.geometry):
+        for cn, cg in zip(in_com.Nom_commun, com_m.geometry):
+            if not dg.intersects(cg):
+                continue
+            a = dg.intersection(cg).area
+            if a > 0.05 * min(dg.area, cg.area):
+                d2c[dn].append(cn)
+                c2d[cn].append(dn)
+    # FOSA : district et commune d'appartenance (spatial)
+    in_fo = in_fo.copy()
+    in_fo["ds"] = gpd.sjoin(in_fo[["geometry"]], in_ds_geo[["District_S", "geometry"]], how="left", predicate="within").groupby(level=0)["District_S"].first()
+    in_fo["cm"] = gpd.sjoin(in_fo[["geometry"]], in_com[["Nom_commun", "geometry"]], how="left", predicate="within").groupby(level=0)["Nom_commun"].first()
     # --- attributs cliquables : district de santé
     dprops = []
     for _, g in in_ds_geo.iterrows():
@@ -113,6 +129,7 @@ for d in dep.itertuples():
             UNMATCHED["districts"].append(g.District_S)
         r = row.iloc[0] if len(row) else {}
         dprops.append({
+            "communes_in": "|".join(sorted(d2c.get(g.District_S, []))),
             "pop": num(g.Pop_2026), "classification": None if not len(row) or pd.isna(r["classification"]) else str(r["classification"]),
             "pop1h": num(r["% Population à 1h FOSA"]) if len(row) else None,
             "communes_couvertes": None if not len(row) or pd.isna(r["communes_couvertes"]) else str(r["communes_couvertes"]).strip().rstrip(","),
@@ -131,6 +148,7 @@ for d in dep.itertuples():
             UNMATCHED["communes"].append(g.Nom_commun)
         r = row.iloc[0] if len(row) else {}
         cprops.append({
+            "districts_in": "|".join(sorted(c2d.get(g.Nom_commun, []))),
             "departement": d.Nom_Dept, "nb_fosa": int(len(sel)),
             **{c: (num(r[c]) if len(row) else None) for c in ("public", "prive", "hr_hra", "hd", "cma", "csi")},
         })
@@ -139,7 +157,7 @@ for d in dep.itertuples():
     layers = {
         "communes": fc(gpd.GeoDataFrame(com_layer, geometry="geometry", crs=4326), [c for c in com_layer.columns if c != "geometry"]),
         "districts": fc(gpd.GeoDataFrame(ds_layer, geometry="geometry", crs=4326), [c for c in ds_layer.columns if c != "geometry"]),
-        "fosa": fc(in_fo.rename(columns={"District d": "district", "Aire de sa": "aire"}), ["Fosa", "categorie", "statut_fos", "district", "aire"]),
+        "fosa": fc(in_fo.rename(columns={"District d": "district", "Aire de sa": "aire"}), ["Fosa", "categorie", "statut_fos", "district", "aire", "ds", "cm"]),
         "routes": fc(r_clip.assign(geometry=r_clip.geometry.simplify(tol / 2)).explode(index_parts=False), ["label_n"]),
         "labels": [[str(n), "c", round(pt.x, 4), round(pt.y, 4)] for n, pt in zip(in_com.Nom_commun, in_com.geometry.representative_point())]
                   + [[str(n), "d", round(pt.x, 4), round(pt.y, 4)] for n, pt in zip(in_ds_geo.District_S, in_ds_geo.geometry.representative_point())],

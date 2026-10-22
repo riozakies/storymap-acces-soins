@@ -31,6 +31,8 @@
     for (const [a, b, , c] of ACCESS_CLASSES) if (v >= a && v < b) return c;
     return "#cccccc";
   };
+  const IS_PUBLIC = ["in", ["get", "statut_fos"], ["literal", ["public", "parapublic"]]];
+  const DATA_V = "4";   // à changer à chaque mise à jour des données (évite les fichiers périmés en cache)
   const isMobile = () => window.matchMedia("(max-width: 860px)").matches;
 
   // ---------- état ----------
@@ -67,9 +69,9 @@
 
   // ---------- démarrage ----------
   Promise.all([
-    fetch("data/atlas.json").then((r) => r.json()),
-    fetch("data/departements.json").then((r) => r.json()),
-    fetch("data/cameroun.json").then((r) => r.json()),
+    fetch("data/atlas.json?v=" + DATA_V).then((r) => r.json()),
+    fetch("data/departements.json?v=" + DATA_V).then((r) => r.json()),
+    fetch("data/cameroun.json?v=" + DATA_V).then((r) => r.json()),
   ]).then(([atlas, depts, pays]) => {
     ATLAS = atlas;
     DEPTS = depts;
@@ -123,6 +125,8 @@
       map.addLayer({ id: "dept-choro-line", type: "line", source: "depts", paint: { "line-color": "#ffffff", "line-width": 0.8 } });
       // masque hors du département (équivalent du polygone inversé de l'atlas)
       map.addLayer({ id: "dept-mask", type: "fill", source: "depts", filter: ["==", ["get", "slug"], ""], paint: { "fill-color": "#ffffff", "fill-opacity": 0.72 } });
+      map.addSource("focus-mask", { type: "geojson", data: empty });
+      map.addLayer({ id: "focus-mask", type: "fill", source: "focus-mask", paint: { "fill-color": "#ffffff", "fill-opacity": 0.78 } });
       map.addLayer({ id: "rivieres", type: "line", source: "rivieres", paint: { "line-color": "#6498d2", "line-width": ["match", ["get", "waterway"], "river", 1.6, 0.8] } });
       map.addLayer({ id: "routes-sec", type: "line", source: "routes", filter: ["==", ["get", "label_n"], "secondary"], paint: { "line-color": "#fdbf6f", "line-width": 1.6 } });
       map.addLayer({ id: "routes-main", type: "line", source: "routes", filter: ["==", ["get", "label_n"], "main road"], paint: { "line-color": "#000000", "line-width": 2.4 } });
@@ -137,7 +141,7 @@
       map.addLayer({ id: "dept-hover", type: "line", source: "depts", paint: { "line-color": "#1d2a24", "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 2.5, 0] } });
 
       // FOSA privées : cercle creux violet avec point central
-      const isPublic = ["in", ["get", "statut_fos"], ["literal", ["public", "parapublic"]]];
+      const isPublic = IS_PUBLIC;
       map.addLayer({ id: "fosa-priv", type: "circle", source: "fosa", filter: ["!", isPublic], paint: {
         "circle-radius": ["interpolate", ["linear"], ["zoom"], 7, 3, 12, 6], "circle-color": "rgba(0,0,0,0)",
         "circle-stroke-color": PRIVATE, "circle-stroke-width": 1.5 } });
@@ -152,6 +156,8 @@
         "circle-color": catColor,
         "circle-stroke-color": ["match", ["get", "categorie"], PUBLIC_CAT.map((c) => c[0]), "#33a02c", "#e31a1c"],
         "circle-stroke-width": 1.2 } });
+
+      map.moveLayer("focus-mask", "communes-fill");   // voile au-dessus des routes et cours d'eau, sous les limites et les FOSA
 
       // interactions
       const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "280px" });
@@ -173,7 +179,7 @@
         if (map.queryRenderedFeatures(e.point, { layers: ["fosa-pub", "fosa-priv"] }).length) return;
         const dist = map.queryRenderedFeatures(e.point, { layers: ["districts-fill"] })[0];
         const com = map.queryRenderedFeatures(e.point, { layers: ["communes-fill"] })[0];
-        if (!dist && !com) { clearSelection(); return; }
+        if (!dist && !com) { if (!isolated) clearSelection(); return; }
         showZone(e.lngLat, dist && dist.properties, com && com.properties);
       });
       ["districts-fill", "communes-fill"].forEach((id) => {
@@ -453,6 +459,7 @@
     if (navActive) navActive.scrollIntoView({ block: "nearest", inline: "nearest" });
     writeHash(current.region, ch.type === "dept" ? ch.dept.slug : null);
     if (!map || !mapReady) return;
+    unisolate(false);
 
     const pad = isMobile() ? 20 : { top: 40, bottom: 40, left: 40, right: 200 };
     if (ch.type === "dept") {
@@ -524,28 +531,92 @@
   }
   function showZone(lngLat, dist, com) {
     highlight(dist && dist.District_S, com && com.Nom_commun);
-    const parts = [dist && districtHtml(dist), com && communeHtml(com)].filter(Boolean);
+    const btn = (kind, name, txt) =>
+      isolated && isolated.kind === kind && isolated.name === name ? "" :
+      `<button class="zp-btn" data-kind="${kind}" data-name="${esc(name)}">${txt}</button>`;
+    const parts = [
+      dist && districtHtml(dist) + btn("d", dist.District_S, "Afficher uniquement ce district"),
+      com && communeHtml(com) + btn("c", com.Nom_commun, "Afficher uniquement cette commune"),
+    ].filter(Boolean);
     zonePopup.setLngLat(lngLat).setHTML(parts.join('<hr class="zp-sep">')).addTo(map);
+    zonePopup.getElement().querySelectorAll(".zp-btn").forEach((b) =>
+      b.addEventListener("click", () => isolate(b.dataset.kind, b.dataset.name)));
   }
-  // depuis les tableaux du récit : centrer la carte sur la zone et ouvrir sa fiche
-  function focusZone(kind, name) {
-    if (!currentData) return;
+
+  // ---------- isoler un district ou une commune (comme une région isole ses départements) ----------
+  let isolated = null;
+  const featureOf = (kind, name) => {
+    if (!currentData) return null;
     const src = kind === "d" ? currentData.districts : currentData.communes;
     const key = kind === "d" ? "District_S" : "Nom_commun";
-    const f = src.features.find((x) => x.properties[key] === name);
-    const lbl = currentData.labels.find((l) => l[1] === kind && l[0] === name);
-    if (!f || !lbl) return;
+    return src.features.find((x) => x.properties[key] === name) || null;
+  };
+  function boundsOf(f) {
     const b = new maplibregl.LngLatBounds();
     const walk = (c) => (typeof c[0] === "number" ? b.extend(c) : c.forEach(walk));
     walk(f.geometry.coordinates);
-    map.fitBounds(b, { padding: isMobile() ? 20 : 80, duration: 900, maxZoom: 13 });
-    showZone({ lng: lbl[2], lat: lbl[3] }, kind === "d" ? f.properties : null, kind === "c" ? f.properties : null);
+    return b;
   }
+  function invertedMask(f) {
+    // grand rectangle percé de la zone : tout ce qui est hors de la zone est voilé de blanc
+    const outer = [[0, -10], [30, -10], [30, 20], [0, 20], [0, -10]];
+    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+    return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [outer, ...polys.map((pl) => pl[0])] } };
+  }
+  function isolate(kind, name) {
+    const f = featureOf(kind, name);
+    if (!f) return;
+    isolated = { kind, name };
+    const pr = f.properties;
+    const inList = (pr[kind === "d" ? "communes_in" : "districts_in"] || "").split("|").filter(Boolean);
+    const lit = (v) => ["literal", v];
+    if (kind === "d") {
+      ["districts-line", "districts-fill"].forEach((id) => map.setFilter(id, ["==", ["get", "District_S"], name]));
+      ["communes-line", "communes-fill"].forEach((id) => map.setFilter(id, ["in", ["get", "Nom_commun"], lit(inList)]));
+    } else {
+      ["communes-line", "communes-fill"].forEach((id) => map.setFilter(id, ["==", ["get", "Nom_commun"], name]));
+      ["districts-line", "districts-fill"].forEach((id) => map.setFilter(id, ["in", ["get", "District_S"], lit(inList)]));
+    }
+    const fz = ["==", ["get", kind === "d" ? "ds" : "cm"], name];
+    map.setFilter("fosa-pub", ["all", IS_PUBLIC, fz]);
+    map.setFilter("fosa-priv", ["all", ["!", IS_PUBLIC], fz]);
+    map.setFilter("fosa-priv-dot", ["all", ["!", IS_PUBLIC], fz]);
+    map.getSource("focus-mask").setData(invertedMask(f));
+    const keepD = kind === "d" ? [name] : inList, keepC = kind === "c" ? [name] : inList;
+    setLabels(currentData.labels.filter((l) => (l[1] === "d" && keepD.includes(l[0])) || (l[1] === "c" && keepC.includes(l[0])))
+      .sort((a, b) => (a[0] === name ? -1 : b[0] === name ? 1 : 0)));
+    map.fitBounds(boundsOf(f), { padding: isMobile() ? 20 : { top: 60, bottom: 40, left: 40, right: 220 }, duration: 900, maxZoom: 13 });
+    const lbl = currentData.labels.find((l) => l[1] === kind && l[0] === name);
+    showZone({ lng: lbl[2], lat: lbl[3] }, kind === "d" ? pr : null, kind === "c" ? pr : null);
+    const bar = $("#focus-bar");
+    bar.querySelector("span").textContent = (kind === "d" ? "District de santé : " : "Commune : ") + name;
+    bar.hidden = false;
+  }
+  function unisolate(refit = true) {
+    if (!isolated) return;
+    isolated = null;
+    ["districts-line", "districts-fill", "communes-line", "communes-fill"].forEach((id) => map.setFilter(id, null));
+    map.setFilter("fosa-pub", IS_PUBLIC);
+    map.setFilter("fosa-priv", ["!", IS_PUBLIC]);
+    map.setFilter("fosa-priv-dot", ["!", IS_PUBLIC]);
+    map.getSource("focus-mask").setData({ type: "FeatureCollection", features: [] });
+    $("#focus-bar").hidden = true;
+    clearSelection();
+    if (currentData) setLabels(currentData.labels.filter((l) => l[1] === "d").concat(currentData.labels.filter((l) => l[1] === "c")));
+    const ch = current.chapter;
+    if (refit && ch && ch.type === "dept") {
+      const d = ch.dept;
+      map.fitBounds([[d.bbox[0], d.bbox[1]], [d.bbox[2], d.bbox[3]]], { padding: isMobile() ? 20 : { top: 40, bottom: 40, left: 40, right: 200 }, duration: 900, maxZoom: 12 });
+    }
+  }
+  $("#focus-back").addEventListener("click", () => unisolate());
+  // depuis les tableaux ou les étiquettes : isoler directement la zone
+  const focusZone = (kind, name) => isolate(kind, name);
 
   function setDeptLayers(on, d) {
     const vis = on ? "visible" : "none";
     if (!on) clearSelection();
-    ["rivieres", "routes-sec", "routes-main", "communes-fill", "districts-fill", "communes-hl", "districts-hl", "communes-line", "districts-line", "dept-active", "fosa-priv", "fosa-priv-dot", "fosa-pub"]
+    ["focus-mask", "rivieres", "routes-sec", "routes-main", "communes-fill", "districts-fill", "communes-hl", "districts-hl", "communes-line", "districts-line", "dept-active", "fosa-priv", "fosa-priv-dot", "fosa-pub"]
       .forEach((id) => map.setLayoutProperty(id, "visibility", vis));
     map.setLayoutProperty("dept-choro", "visibility", on ? "none" : "visible");
     map.setLayoutProperty("dept-choro-line", "visibility", on ? "none" : "visible");
@@ -593,7 +664,7 @@
   }
 
   function loadDept(slug) {
-    if (!cache[slug]) cache[slug] = fetch(`data/dept/${slug}.json`).then((r) => r.json());
+    if (!cache[slug]) cache[slug] = fetch(`data/dept/${slug}.json?v=${DATA_V}`).then((r) => r.json());
     return cache[slug];
   }
 })();
