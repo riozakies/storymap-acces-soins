@@ -191,3 +191,21 @@ table.zp td { font-weight: 700; text-align: right; }
 .zp-btn:hover { background: var(--accent); color: #fff; }
 @media (max-width: 860px) { #focus-bar { top: auto; bottom: 8px; left: 8px; transform: none; font-size: 12px; } }
 table:not(.zp) tr:first-child th:first-child { background: #edf1ee; z-index: 1; }
+
+/* logo, choix de la langue */
+.brand { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+#logo { height: 56px; width: auto; display: block; }
+#lang-switch { margin-left: auto; display: inline-flex; border: 1px solid #c4d1ca; border-radius: 999px; overflow: hidden; }
+#lang-switch button { font: inherit; font-size: 12px; font-weight: 700; padding: 3px 10px; border: 0; background: #fff; color: var(--muted); cursor: pointer; }
+#lang-switch button.active { background: var(--accent); color: #fff; }
+#lang-splash { position: fixed; inset: 0; z-index: 50; background: rgba(29, 42, 36, .55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+#lang-splash[hidden] { display: none; }
+.splash-card { background: #fff; border-radius: 12px; padding: 28px 28px 24px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.splash-card img { height: 90px; width: auto; margin: 0 auto 12px; display: block; }
+.splash-title { font-size: 22px; font-weight: 800; margin: 0 0 10px; line-height: 1.25; }
+.splash-title span { font-size: 17px; font-weight: 600; color: var(--muted); }
+.splash-q { color: var(--muted); margin: 0 0 16px; }
+.splash-btns { display: flex; gap: 10px; justify-content: center; }
+.splash-btns button { font: inherit; font-weight: 700; font-size: 16px; padding: 10px 22px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; min-width: 130px; }
+.splash-btns button + button { background: #fff; color: var(--accent); }
+@media (max-width: 860px) { #logo { height: 40px; } .ministry { display: none; } }

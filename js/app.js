@@ -2,6 +2,16 @@
 (function () {
   "use strict";
 
+  // ---------- langue ----------
+  let LANG = "fr";
+  try {
+    const q = new URLSearchParams(location.hash.slice(1)).get("lang");
+    LANG = q === "en" || q === "fr" ? q : localStorage.getItem("atlas-lang") || "";
+  } catch (e) { LANG = ""; }
+  const L = () => window.I18N[LANG || "fr"];
+  const t = (k, vars) => String(L()[k] ?? window.I18N.fr[k] ?? k).replace(/\{(\w+)\}/g, (_, v) => (vars && vars[v] !== undefined ? vars[v] : ""));
+  const rn = (r) => (L().regions && L().regions[r]) || r;          // nom de région affiché
+
   // ---------- styles repris du projet QGIS ----------
   const PUBLIC_CAT = [
     ["hg", "Hôpital général (HG)", "#53d9c3"],
@@ -22,9 +32,8 @@
   ];
   const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}";
 
-  const fmt = new Intl.NumberFormat("fr-FR");
-  const nf = (v) => (v === null || v === undefined || v === "" ? "–" : typeof v === "number" ? fmt.format(v) : v);
-  const pct = (v) => (v === null || v === undefined || typeof v !== "number" ? "–" : v.toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " %");
+  const nf = (v) => (v === null || v === undefined || v === "" ? "–" : typeof v === "number" ? v.toLocaleString(L().locale) : v);
+  const pct = (v) => (v === null || v === undefined || typeof v !== "number" ? "–" : v.toLocaleString(L().locale, { maximumFractionDigits: 1 }) + " %");
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const accessColor = (v) => {
     if (typeof v !== "number") return "#cccccc";
@@ -67,6 +76,30 @@
   const $ = (s) => document.querySelector(s);
   const chaptersEl = $("#chapters");
 
+  // ---------- textes fixes de la page et choix de la langue ----------
+  function applyStatic() {
+    document.documentElement.lang = LANG || "fr";
+    document.title = t("title");
+    document.querySelectorAll("[data-i18n]").forEach((el) => (el.textContent = t(el.dataset.i18n)));
+    document.querySelectorAll("#lang-switch button").forEach((b) => b.classList.toggle("active", b.dataset.lang === (LANG || "fr")));
+    const sel = $("#region-select");
+    if (sel) Array.from(sel.options).forEach((o) => (o.textContent = o.value ? rn(o.value) : t("nationalView")));
+  }
+  function setLang(l) {
+    LANG = l;
+    try { localStorage.setItem("atlas-lang", l); } catch (e) { /* stockage indisponible */ }
+    applyStatic();
+    $("#lang-splash").hidden = true;
+    if (ATLAS && mapReady) {
+      const wasDept = current.chapter && current.chapter.type === "dept" ? current.chapter.dept.slug : null;
+      buildLegend(wasDept ? "dept" : "national");
+      selectRegion(current.region, wasDept, false);
+    }
+  }
+  document.querySelectorAll("[data-lang]").forEach((b) => b.addEventListener("click", () => setLang(b.dataset.lang)));
+  if (!LANG) $("#lang-splash").hidden = false;
+  applyStatic();
+
   // ---------- démarrage ----------
   Promise.all([
     fetch("data/atlas.json?v=" + DATA_V).then((r) => r.json()),
@@ -86,7 +119,7 @@
     atlas.regions.forEach((r) => {
       const o = document.createElement("option");
       o.value = r;
-      o.textContent = r;
+      o.textContent = rn(r);
       sel.appendChild(o);
     });
     sel.addEventListener("change", () => selectRegion(sel.value, null, true));
@@ -126,7 +159,7 @@
       // masque hors du département (équivalent du polygone inversé de l'atlas)
       map.addLayer({ id: "dept-mask", type: "fill", source: "depts", filter: ["==", ["get", "slug"], ""], paint: { "fill-color": "#ffffff", "fill-opacity": 0.72 } });
       map.addSource("focus-mask", { type: "geojson", data: empty });
-      map.addLayer({ id: "focus-mask", type: "fill", source: "focus-mask", paint: { "fill-color": "#ffffff", "fill-opacity": 0.78 } });
+      map.addLayer({ id: "focus-mask", type: "fill", source: "focus-mask", paint: { "fill-color": "#ffffff", "fill-opacity": 0.93 } });
       map.addLayer({ id: "rivieres", type: "line", source: "rivieres", paint: { "line-color": "#6498d2", "line-width": ["match", ["get", "waterway"], "river", 1.6, 0.8] } });
       map.addLayer({ id: "routes-sec", type: "line", source: "routes", filter: ["==", ["get", "label_n"], "secondary"], paint: { "line-color": "#fdbf6f", "line-width": 1.6 } });
       map.addLayer({ id: "routes-main", type: "line", source: "routes", filter: ["==", ["get", "label_n"], "main road"], paint: { "line-color": "#000000", "line-width": 2.4 } });
@@ -157,7 +190,11 @@
         "circle-stroke-color": ["match", ["get", "categorie"], PUBLIC_CAT.map((c) => c[0]), "#33a02c", "#e31a1c"],
         "circle-stroke-width": 1.2 } });
 
-      map.moveLayer("focus-mask", "communes-fill");   // voile au-dessus des routes et cours d'eau, sous les limites et les FOSA
+      // zone isolée : voile presque opaque sur tout le reste (limites voisines comprises), puis contour de la zone
+      map.moveLayer("focus-mask", "fosa-priv");
+      map.addSource("focus-zone", { type: "geojson", data: empty });
+      map.addLayer({ id: "focus-zone-line", type: "line", source: "focus-zone",
+        paint: { "line-color": "#1f78b4", "line-width": 3 } }, "fosa-priv");
 
       // interactions
       const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "280px" });
@@ -241,38 +278,33 @@
   }
 
   // ---------- libellés ----------
-  function catLabel(c) {
-    const m = PUBLIC_CAT.find((x) => x[0] === c);
-    if (m) return m[1];
-    return ({ centre_sante: "Centre de santé", clinique: "Clinique", cabinet_medical: "Cabinet médical", hopital_confessionnel: "Hôpital confessionnel", polyclinique: "Polyclinique", autre: "Autre" })[c] || c || "–";
-  }
-  function statutLabel(s) {
-    return ({ public: "Public", parapublic: "Parapublic", prive_laic: "Privé laïc", prive_confessionnel: "Privé confessionnel" })[s] || s || "–";
-  }
+  function catLabel(c) { return L().cat[c] || c || "–"; }
+  function statutLabel(s) { return L().statut[s] || s || "–"; }
+  const classLabel = (c) => (c && L().classif[c]) || c || "–";
 
   // ---------- légende ----------
   function buildLegend(mode) {
     const b = $("#legend-body");
     if (mode !== "dept") {
-      b.innerHTML = `<div class="lg-title">Population à 1 h d'une FOSA</div>` +
+      b.innerHTML = `<div class="lg-title">${t("lgAccess")}</div>` +
         ACCESS_CLASSES.map(([, , l, c]) => `<div class="lg-row"><span class="lg-sym"><span class="sq" style="background:${c}"></span></span>${l}</div>`).join("") +
-        `<div class="lg-row"><span class="lg-sym"><span class="sq" style="background:#cccccc"></span></span>Non renseigné</div>` +
-        `<p class="note" style="margin:6px 0 0">Cliquez sur un département pour ouvrir son atlas.</p>`;
+        `<div class="lg-row"><span class="lg-sym"><span class="sq" style="background:#cccccc"></span></span>${t("lgNA")}</div>` +
+        `<p class="note" style="margin:6px 0 0">${t("lgClickDept")}</p>`;
       return;
     }
     b.innerHTML =
-      `<div class="lg-title">FOSA publique</div>` +
-      PUBLIC_CAT.map(([, l, c]) => `<div class="lg-row"><span class="lg-sym"><span class="dot" style="background:${c};border-color:#33a02c"></span></span>${l}</div>`).join("") +
-      `<div class="lg-row"><span class="lg-sym"><span class="dot" style="background:${PUBLIC_OTHER};border-color:#e31a1c"></span></span>Autre FOSA publique</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ring"></span></span>FOSA privée</div>` +
-      `<div class="lg-title">Limites</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-top:2px dashed #000"></span></span>Département</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-top:2px dotted #000"></span></span>District de santé</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#28744c;border-top-width:1px"></span></span>Commune</div>` +
-      `<div class="lg-title">Réseau</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#000;border-top-width:3px"></span></span>Route principale</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#fdbf6f;border-top-width:2px"></span></span>Route secondaire</div>` +
-      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#6498d2"></span></span>Cours d'eau</div>`;
+      `<div class="lg-title">${t("lgPublic")}</div>` +
+      PUBLIC_CAT.map(([k, , c]) => `<div class="lg-row"><span class="lg-sym"><span class="dot" style="background:${c};border-color:#33a02c"></span></span>${catLabel(k)}</div>`).join("") +
+      `<div class="lg-row"><span class="lg-sym"><span class="dot" style="background:${PUBLIC_OTHER};border-color:#e31a1c"></span></span>${t("lgOtherPublic")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ring"></span></span>${t("lgPrivate")}</div>` +
+      `<div class="lg-title">${t("lgLimits")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-top:2px dashed #000"></span></span>${t("department")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-top:2px dotted #000"></span></span>${t("district")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#28744c;border-top-width:1px"></span></span>${t("commune")}</div>` +
+      `<div class="lg-title">${t("lgNetwork")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#000;border-top-width:3px"></span></span>${t("mainRoad")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#fdbf6f;border-top-width:2px"></span></span>${t("secRoad")}</div>` +
+      `<div class="lg-row"><span class="lg-sym"><span class="ln" style="border-color:#6498d2"></span></span>${t("river")}</div>`;
   }
   $("#legend-toggle").addEventListener("click", () => {
     const l = $("#legend");
@@ -292,6 +324,7 @@
     const p = new URLSearchParams();
     if (region) p.set("region", region);
     if (dept) p.set("dept", dept);
+    if (LANG && LANG !== "fr") p.set("lang", LANG);
     const h = p.toString();
     history.replaceState(null, "", h ? "#" + h : location.pathname + location.search);
   }
@@ -368,18 +401,18 @@
     const c = {
       id: "national", type: "national",
       html: `<section class="chapter" id="national">
-        <p class="eyebrow">Cameroun</p>
-        <h2>Les formations sanitaires, département par département</h2>
-        <p>Cet atlas présente, pour chacun des ${all.length} départements, l'offre de soins (formations sanitaires publiques et privées), la population estimée en 2026 et la part de la population vivant à moins d'une heure d'une formation sanitaire.</p>
+        <p class="eyebrow">${t("natEyebrow")}</p>
+        <h2>${t("natTitle")}</h2>
+        <p>${t("natIntro", { n: all.length })}</p>
         <div class="kpis">
-          <div class="kpi"><div class="l">Formations sanitaires</div><div class="v">${nf(sum("fosa"))}</div></div>
-          <div class="kpi"><div class="l">Districts de santé</div><div class="v">${nf(sum("districts"))}</div></div>
-          <div class="kpi"><div class="l">Communes</div><div class="v">${nf(sum("communes"))}</div></div>
-          <div class="kpi"><div class="l">Population estimée 2026</div><div class="v">${nf(sum("population"))}</div></div>
+          <div class="kpi"><div class="l">${t("kFosa")}</div><div class="v">${nf(sum("fosa"))}</div></div>
+          <div class="kpi"><div class="l">${t("kDistricts")}</div><div class="v">${nf(sum("districts"))}</div></div>
+          <div class="kpi"><div class="l">${t("kCommunes")}</div><div class="v">${nf(sum("communes"))}</div></div>
+          <div class="kpi"><div class="l">${t("kPop")}</div><div class="v">${nf(sum("population"))}</div></div>
         </div>
-        <h3>Choisir une région</h3>
-        <div class="region-list">${regions.map((x) => `<button data-goto-region="${esc(x.r)}"><b>${esc(x.r)}</b><small>${x.n} départements · ${nf(x.fosa)} FOSA</small></button>`).join("")}</div>
-        <p class="note" style="margin-top:12px">La carte montre la part de la population à moins d'une heure d'une FOSA. Cliquez sur un département pour ouvrir directement son atlas.</p>
+        <h3>${t("chooseRegion")}</h3>
+        <div class="region-list">${regions.map((x) => `<button data-goto-region="${esc(x.r)}"><b>${esc(rn(x.r))}</b><small>${t("regionItem", { n: x.n, f: nf(x.fosa) })}</small></button>`).join("")}</div>
+        <p class="note" style="margin-top:12px">${t("natNote")}</p>
       </section>`,
     };
     chapterIndex = { national: c };
@@ -394,15 +427,15 @@
     const c = {
       id: "region", type: "region", region, bbox,
       html: `<section class="chapter" id="region">
-        <p class="eyebrow">Région</p>
-        <h2>${esc(region)}</h2>
-        <p>La région compte ${depts.length} départements, ${nf(sum("districts"))} districts de santé et ${nf(sum("fosa"))} formations sanitaires fonctionnelles pour une population estimée à ${nf(sum("population"))} habitants en 2026.${low ? ` Le département le moins bien desservi est <b>${esc(low.nom)}</b>, avec ${pct(low.pop1h)} de sa population à moins d'une heure d'une FOSA.` : ""}</p>
-        <h3>Départements</h3>
+        <p class="eyebrow">${t("regEyebrow")}</p>
+        <h2>${esc(rn(region))}</h2>
+        <p>${t("regIntro", { n: depts.length, d: nf(sum("districts")), f: nf(sum("fosa")), p: nf(sum("population")) })}${low ? t("regLow", { dept: esc(low.nom), v: pct(low.pop1h) }) : ""}</p>
+        <h3>${t("departments")}</h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>Département</th><th>FOSA</th><th>Districts</th><th>Population 2026</th><th>Pop. à 1 h</th></tr></thead>
-          <tbody>${rows}<tr class="total"><td>Total</td><td>${nf(sum("fosa"))}</td><td>${nf(sum("districts"))}</td><td>${nf(sum("population"))}</td><td></td></tr></tbody>
+          <thead><tr><th>${t("thDept")}</th><th>${t("thFosa")}</th><th>${t("thDistricts")}</th><th>${t("thPop")}</th><th>${t("thPop1h")}</th></tr></thead>
+          <tbody>${rows}<tr class="total"><td>${t("total")}</td><td>${nf(sum("fosa"))}</td><td>${nf(sum("districts"))}</td><td>${nf(sum("population"))}</td><td></td></tr></tbody>
         </table></div>
-        <p class="note" style="margin-top:10px">Faites défiler pour parcourir l'atlas de chaque département, ou cliquez sur une ligne.</p>
+        <p class="note" style="margin-top:10px">${t("regNote")}</p>
       </section>`,
     };
     chapterIndex = { region: c };
@@ -413,35 +446,35 @@
     const tdist = d.tab_districts;
     const tcom = d.tab_communes;
     const sumCol = (rows, i) => rows.reduce((a, r) => a + (typeof r[i] === "number" ? r[i] : 0), 0);
-    const distRows = tdist.map((r) => `<tr class="clickable" data-zone="d" data-name="${esc(r[0])}"><td>${esc(r[0])}</td><td>${nf(r[1])}</td><td>${nf(r[2])}</td><td>${nf(r[3])}</td><td>${nf(r[4])}</td><td>${nf(r[5])}</td><td>${nf(r[6])}</td><td>${esc(r[7] || "–")}</td><td>${pct(r[8])}</td><td class="txt">${esc(r[9] || "–")}</td></tr>`).join("");
+    const distRows = tdist.map((r) => `<tr class="clickable" data-zone="d" data-name="${esc(r[0])}"><td>${esc(r[0])}</td><td>${nf(r[1])}</td><td>${nf(r[2])}</td><td>${nf(r[3])}</td><td>${nf(r[4])}</td><td>${nf(r[5])}</td><td>${nf(r[6])}</td><td>${esc(classLabel(r[7]))}</td><td>${pct(r[8])}</td><td class="txt">${esc(r[9] || "–")}</td></tr>`).join("");
     const comRows = tcom.map((r) => `<tr class="clickable" data-zone="c" data-name="${esc(r[0])}"><td>${esc(r[0])}</td>${r.slice(1).map((v) => `<td>${nf(v)}</td>`).join("")}</tr>`).join("");
-    const comTotal = tcom.length > 1 ? `<tr class="total"><td>Total</td>${[1, 2, 3, 4, 5, 6].map((i) => `<td>${nf(sumCol(tcom, i))}</td>`).join("")}</tr>` : "";
-    const distTotal = tdist.length > 1 ? `<tr class="total"><td>Total</td><td>${nf(sumCol(tdist, 1))}</td>${[2, 3, 4, 5, 6].map((i) => `<td>${nf(sumCol(tdist, i))}</td>`).join("")}<td></td><td></td><td></td></tr>` : "";
+    const comTotal = tcom.length > 1 ? `<tr class="total"><td>${t("total")}</td>${[1, 2, 3, 4, 5, 6].map((i) => `<td>${nf(sumCol(tcom, i))}</td>`).join("")}</tr>` : "";
+    const distTotal = tdist.length > 1 ? `<tr class="total"><td>${t("total")}</td><td>${nf(sumCol(tdist, 1))}</td>${[2, 3, 4, 5, 6].map((i) => `<td>${nf(sumCol(tdist, i))}</td>`).join("")}<td></td><td></td><td></td></tr>` : "";
     const p1 = typeof d.pop1h === "number" ? d.pop1h : null;
     const c = {
       id: "dept-" + d.slug, type: "dept", dept: d,
       html: `<section class="chapter" id="dept-${d.slug}">
-        <p class="eyebrow">${esc(d.region)} · Département</p>
-        <h2>Atlas sanitaire départemental : ${esc(d.nom.toUpperCase())}</h2>
+        <p class="eyebrow">${t("deptEyebrow", { r: esc(rn(d.region)) })}</p>
+        <h2>${t("deptTitle", { d: esc(d.nom.toUpperCase()) })}</h2>
         <div class="kpis">
-          <div class="kpi"><div class="l">Total FOSA</div><div class="v">${nf(d.fosa)}</div><div class="s">${nf(d.fosa_publiques)} publiques · ${nf(d.fosa_privees)} privées</div></div>
-          <div class="kpi"><div class="l">Estimation population (2026)</div><div class="v">${nf(d.population)}</div><div class="s">habitants</div></div>
-          <div class="kpi"><div class="l">Total communes</div><div class="v">${nf(d.communes)}</div></div>
-          <div class="kpi"><div class="l">Total districts de santé</div><div class="v">${nf(d.districts)}</div></div>
-          <div class="kpi wide"><div class="l">Proportion de la population à 1 heure d'une FOSA</div><div class="v">${pct(p1)}</div>
+          <div class="kpi"><div class="l">${t("kTotalFosa")}</div><div class="v">${nf(d.fosa)}</div><div class="s">${t("pubPriv", { a: nf(d.fosa_publiques), b: nf(d.fosa_privees) })}</div></div>
+          <div class="kpi"><div class="l">${t("kPopEst")}</div><div class="v">${nf(d.population)}</div><div class="s">${t("inhabitants")}</div></div>
+          <div class="kpi"><div class="l">${t("kTotalCommunes")}</div><div class="v">${nf(d.communes)}</div></div>
+          <div class="kpi"><div class="l">${t("kTotalDistricts")}</div><div class="v">${nf(d.districts)}</div></div>
+          <div class="kpi wide"><div class="l">${t("kPop1h")}</div><div class="v">${pct(p1)}</div>
             <div class="bar"><span style="width:${p1 ?? 0}%;background:${accessColor(p1)}"></span></div></div>
         </div>
-        <p class="note">Cliquez sur un district ou une commune (sur la carte, sur son nom ou dans les tableaux) pour afficher sa fiche.</p>
-        <h3>Formations sanitaires par district de santé (2026)</h3>
+        <p class="note">${t("clickNote")}</p>
+        <h3>${t("tabDistricts")}</h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>District de santé</th><th>Population 2026 (hab.)</th><th>FOSA publiques</th><th>HR/HRA</th><th>HD</th><th>CMA</th><th>CSI/ Infirmerie</th><th>Classification</th><th>% pop. à 1 h</th><th>Communes couvertes</th></tr></thead>
-          <tbody>${distRows || `<tr><td colspan="10">Aucune donnée</td></tr>`}${distTotal}</tbody>
+          <thead><tr><th>${t("thDistrict")}</th><th>${t("thPopHab")}</th><th>${t("thPub")}</th><th>HR/HRA</th><th>HD</th><th>CMA</th><th>${t("thCsi")}</th><th>${t("thClass")}</th><th>${t("thPct1h")}</th><th>${t("thComCov")}</th></tr></thead>
+          <tbody>${distRows || `<tr><td colspan="10">${t("noData")}</td></tr>`}${distTotal}</tbody>
         </table></div>
-        ${tdist.length && sumCol(tdist, 2) !== d.fosa_publiques ? `<p class="note" style="margin-top:6px">Le total des FOSA publiques par district (${nf(sumCol(tdist, 2))}) diffère de celui du département (${nf(d.fosa_publiques)}) : un district de santé peut s'étendre sur plusieurs départements, il est rattaché ici à un seul.</p>` : ""}
-        <h3>Formations sanitaires par commune (2026)</h3>
+        ${tdist.length && sumCol(tdist, 2) !== d.fosa_publiques ? `<p class="note" style="margin-top:6px">${t("distDiff", { a: nf(sumCol(tdist, 2)), b: nf(d.fosa_publiques) })}</p>` : ""}
+        <h3>${t("tabCommunes")}</h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>Commune</th><th>FOSA publiques</th><th title="FOSA privées laïques et confessionnelles">FOSA privées</th><th>HR/HRA</th><th>HD</th><th>CMA</th><th>CSI/ Infirmerie</th></tr></thead>
-          <tbody>${comRows || `<tr><td colspan="7">Aucune donnée</td></tr>`}${comTotal}</tbody>
+          <thead><tr><th>${t("thCommune")}</th><th>${t("thPub")}</th><th>${t("thPriv")}</th><th>HR/HRA</th><th>HD</th><th>CMA</th><th>${t("thCsi")}</th></tr></thead>
+          <tbody>${comRows || `<tr><td colspan="7">${t("noData")}</td></tr>`}${comTotal}</tbody>
         </table></div>
       </section>`,
     };
@@ -513,21 +546,21 @@
   }
   const row = (l, v) => `<tr><th>${l}</th><td>${v}</td></tr>`;
   function districtHtml(p) {
-    return `<div class="zp-kind">District de santé</div><div class="zp-name">${esc(p.District_S)}</div><table class="zp">` +
-      row("Population 2026", nf(p.pop) + " hab.") +
-      row("Classification", esc(p.classification || "–")) +
-      row("Population à 1 h d'une FOSA", pct(p.pop1h)) +
-      row("FOSA (total)", `${nf(p.nb_fosa)} <span class="zp-s">(${nf(p.nb_pub)} publiques · ${nf(p.nb_priv)} privées)</span>`) +
-      row("HR / HRA · HD", `${nf(p.hr_hra)} · ${nf(p.hd)}`) +
-      row("CMA · CSI / infirmerie", `${nf(p.cma)} · ${nf(p.csi)}`) +
-      row("Communes couvertes", esc(p.communes_couvertes || "–")) + "</table>";
+    return `<div class="zp-kind">${t("district")}</div><div class="zp-name">${esc(p.District_S)}</div><table class="zp">` +
+      row(t("zPop"), nf(p.pop) + " " + t("hab")) +
+      row(t("zClass"), esc(classLabel(p.classification))) +
+      row(t("zPop1h"), pct(p.pop1h)) +
+      row(t("zFosa"), `${nf(p.nb_fosa)} <span class="zp-s">(${t("pubPriv", { a: nf(p.nb_pub), b: nf(p.nb_priv) })})</span>`) +
+      row(t("zHosp"), `${nf(p.hr_hra)} · ${nf(p.hd)}`) +
+      row(t("zCma"), `${nf(p.cma)} · ${nf(p.csi)}`) +
+      row(t("zComCov"), esc(p.communes_couvertes || "–")) + "</table>";
   }
   function communeHtml(p) {
-    return `<div class="zp-kind c">Commune</div><div class="zp-name">${esc(p.Nom_commun)}</div><table class="zp">` +
-      row("FOSA (total)", nf(p.nb_fosa)) +
-      row("Publiques · privées", `${nf(p.public)} · ${nf(p.prive)}`) +
-      row("HR / HRA · HD", `${nf(p.hr_hra)} · ${nf(p.hd)}`) +
-      row("CMA · CSI / infirmerie", `${nf(p.cma)} · ${nf(p.csi)}`) + "</table>";
+    return `<div class="zp-kind c">${t("commune")}</div><div class="zp-name">${esc(p.Nom_commun)}</div><table class="zp">` +
+      row(t("zFosa"), nf(p.nb_fosa)) +
+      row(t("zPubPriv"), `${nf(p.public)} · ${nf(p.prive)}`) +
+      row(t("zHosp"), `${nf(p.hr_hra)} · ${nf(p.hd)}`) +
+      row(t("zCma"), `${nf(p.cma)} · ${nf(p.csi)}`) + "</table>";
   }
   function showZone(lngLat, dist, com) {
     highlight(dist && dist.District_S, com && com.Nom_commun);
@@ -535,8 +568,8 @@
       isolated && isolated.kind === kind && isolated.name === name ? "" :
       `<button class="zp-btn" data-kind="${kind}" data-name="${esc(name)}">${txt}</button>`;
     const parts = [
-      dist && districtHtml(dist) + btn("d", dist.District_S, "Afficher uniquement ce district"),
-      com && communeHtml(com) + btn("c", com.Nom_commun, "Afficher uniquement cette commune"),
+      dist && districtHtml(dist) + btn("d", dist.District_S, t("onlyDistrict")),
+      com && communeHtml(com) + btn("c", com.Nom_commun, t("onlyCommune")),
     ].filter(Boolean);
     zonePopup.setLngLat(lngLat).setHTML(parts.join('<hr class="zp-sep">')).addTo(map);
     zonePopup.getElement().querySelectorAll(".zp-btn").forEach((b) =>
@@ -556,6 +589,18 @@
     const walk = (c) => (typeof c[0] === "number" ? b.extend(c) : c.forEach(walk));
     walk(f.geometry.coordinates);
     return b;
+  }
+  function insideFeature(pt, f) {          // le point est-il dans la zone ? (lancer de rayon)
+    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+    const inRing = (ring) => {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside;
+    };
+    return polys.some((pl) => inRing(pl[0]) && !pl.slice(1).some(inRing));
   }
   function invertedMask(f) {
     // grand rectangle percé de la zone : tout ce qui est hors de la zone est voilé de blanc
@@ -582,14 +627,16 @@
     map.setFilter("fosa-priv", ["all", ["!", IS_PUBLIC], fz]);
     map.setFilter("fosa-priv-dot", ["all", ["!", IS_PUBLIC], fz]);
     map.getSource("focus-mask").setData(invertedMask(f));
+    map.getSource("focus-zone").setData(f);
     const keepD = kind === "d" ? [name] : inList, keepC = kind === "c" ? [name] : inList;
-    setLabels(currentData.labels.filter((l) => (l[1] === "d" && keepD.includes(l[0])) || (l[1] === "c" && keepC.includes(l[0])))
+    setLabels(currentData.labels.filter((l) => (l[0] === name && l[1] === kind) ||
+        (((l[1] === "d" && keepD.includes(l[0])) || (l[1] === "c" && keepC.includes(l[0]))) && insideFeature([l[2], l[3]], f)))
       .sort((a, b) => (a[0] === name ? -1 : b[0] === name ? 1 : 0)));
     map.fitBounds(boundsOf(f), { padding: isMobile() ? 20 : { top: 60, bottom: 40, left: 40, right: 220 }, duration: 900, maxZoom: 13 });
     const lbl = currentData.labels.find((l) => l[1] === kind && l[0] === name);
     showZone({ lng: lbl[2], lat: lbl[3] }, kind === "d" ? pr : null, kind === "c" ? pr : null);
     const bar = $("#focus-bar");
-    bar.querySelector("span").textContent = (kind === "d" ? "District de santé : " : "Commune : ") + name;
+    bar.querySelector("span").textContent = (kind === "d" ? t("focusD") : t("focusC")) + name;
     bar.hidden = false;
   }
   function unisolate(refit = true) {
@@ -600,6 +647,7 @@
     map.setFilter("fosa-priv", ["!", IS_PUBLIC]);
     map.setFilter("fosa-priv-dot", ["!", IS_PUBLIC]);
     map.getSource("focus-mask").setData({ type: "FeatureCollection", features: [] });
+    map.getSource("focus-zone").setData({ type: "FeatureCollection", features: [] });
     $("#focus-bar").hidden = true;
     clearSelection();
     if (currentData) setLabels(currentData.labels.filter((l) => l[1] === "d").concat(currentData.labels.filter((l) => l[1] === "c")));
@@ -616,7 +664,7 @@
   function setDeptLayers(on, d) {
     const vis = on ? "visible" : "none";
     if (!on) clearSelection();
-    ["focus-mask", "rivieres", "routes-sec", "routes-main", "communes-fill", "districts-fill", "communes-hl", "districts-hl", "communes-line", "districts-line", "dept-active", "fosa-priv", "fosa-priv-dot", "fosa-pub"]
+    ["focus-mask", "focus-zone-line", "rivieres", "routes-sec", "routes-main", "communes-fill", "districts-fill", "communes-hl", "districts-hl", "communes-line", "districts-line", "dept-active", "fosa-priv", "fosa-priv-dot", "fosa-pub"]
       .forEach((id) => map.setLayoutProperty(id, "visibility", vis));
     map.setLayoutProperty("dept-choro", "visibility", on ? "none" : "visible");
     map.setLayoutProperty("dept-choro-line", "visibility", on ? "none" : "visible");
@@ -635,7 +683,7 @@
       el.textContent = txt;
       if (kind === "d" || kind === "c") {          // étiquette cliquable : ouvre la fiche
         el.classList.add("clic");
-        el.title = kind === "d" ? "Voir le district de santé" : "Voir la commune";
+        el.title = kind === "d" ? t("seeDistrict") : t("seeCommune");
         el.addEventListener("click", (ev) => { ev.stopPropagation(); focusZone(kind, txt); });
       }
       return new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([x, y]).addTo(map);
