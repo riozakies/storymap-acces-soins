@@ -4,7 +4,7 @@ from pathlib import Path
 import geopandas as gpd, pandas as pd, numpy as np, warnings
 warnings.filterwarnings("ignore")
 SRC = Path(sys.argv[1]); OUT = Path(sys.argv[2])
-(OUT / "data" / "dept").mkdir(parents=True, exist_ok=True)
+(OUT / "data" / "v10" / "dept").mkdir(parents=True, exist_ok=True)
 
 def key(s):
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
@@ -70,6 +70,23 @@ xl_dept = dict(zip(dx.kd, dx.k))
 print("Districts à cheval :", {k: v for k, v in A_CHEVAL.items()})
 print("Rattachement modifié :", [(n, DEP_NAME.get(xl_dept.get(key(n)), "?"), DEP_NAME[k]) for n, k in zip(ds.District_S, ds.dept_k) if xl_dept.get(key(n)) != k])
 CAT_PUB = {"hr_hra": ["hr_hra"], "hd": ["hd"], "cma": ["cma"], "csi": ["csi", "infirmerie"]}
+# --- district de chaque FOSA : district DÉCLARÉ (champ « District d », noms harmonisés), sinon district où tombe le point
+ALIAS_DS = {"kumba": "kumbasouth", "makary": "makari", "niete": "nyeete", "eyumodjock": "eyumojock", "malentouen": "malantouen"}
+GEO_DS = {key(n): n for n in ds.District_S}
+def declared(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return None
+    s = re.sub(r"^\s*District\s+(de\s+sant[ée]\s+)?", "", str(v), flags=re.I).strip()
+    kk = key(s)
+    return GEO_DS.get(ALIAS_DS.get(kk, kk))
+_pos = gpd.sjoin(fo[["geometry"]], ds[["District_S", "geometry"]], how="left", predicate="within")
+fo["dpos"] = _pos[~_pos.index.duplicated()]["District_S"]
+fo["ddec"] = fo["District d"].map(declared)
+fo["dfin"] = fo.ddec.where(fo.ddec.notna(), fo.dpos)
+fo["pv"] = ((fo.dfin != fo.dpos) & fo.dfin.notna()).astype(int)    # position à vérifier
+fo["dept_ds"] = fo.dfin.map(dict(zip(ds.District_S, ds.dept_k)))
+print(f"FOSA : {int(fo.ddec.notna().sum())} rattachées par leur district déclaré, {int(fo.ddec.isna().sum())} par leur position ; {int(fo.pv.sum())} positions à vérifier")
+
 def fosa_counts(sel):
     pub = sel[sel.statut_fos.isin(["public", "parapublic"])]
     out = {"nb_fosa": int(len(sel)), "nb_pub": int(len(pub)), "nb_priv": int(len(sel) - len(pub))}
@@ -119,7 +136,7 @@ def district_rows(tab_ds, in_ds_geo, poly):
         g = geo.get(r.kd)
         txt = lambda c: None if pd.isna(r[c]) or str(r[c]).strip() in ("", "/") else str(r[c]).strip().rstrip(",")
         if g is not None:
-            sel = fo[fo.within(g)]
+            sel = fo[fo.dfin == geo_name[r.kd]]
             cnt = fosa_counts(sel)
             hors = int((~sel.within(poly)).sum())
             pop = num(ds.loc[ds.District_S == geo_name[r.kd], "Pop_2026"].iloc[0])
@@ -143,7 +160,7 @@ for d in dep.itertuples():
     tab_ds = dx[dx.kd.isin(set(in_ds_geo.District_S.map(key))) | ((dx.k == d.k) & ~dx.kd.isin(geo_keys))]
     # FOSA des districts du département situées hors du département (affichées seulement quand on isole le district)
     union_ds = in_ds_geo.geometry.union_all() if len(in_ds_geo) else None
-    fo_hors = fo[~fo.index.isin(in_fo.index) & fo.within(union_ds)] if union_ds is not None else fo.iloc[0:0]
+    fo_hors = fo[~fo.index.isin(in_fo.index) & fo.dfin.isin(set(in_ds_geo.District_S))]
     tab_cb = cb[cb.k == d.k].sort_values("Nom_commun")
     stats = {
         "nom": d.Nom_Dept, "slug": d.slug, "region": d.region, "code": d.Code_Dept,
@@ -154,8 +171,10 @@ for d in dep.itertuples():
         "bbox": [round(v, 4) for v in poly.bounds],
         "tab_districts": district_rows(tab_ds, in_ds_geo, poly),
         "tab_communes": [[num(r[c]) if c != "Nom_commun" else str(r[c]) for c in COM_COLS] for _, r in tab_cb.iterrows()],
-        "districts_voisins": [[n, v[0][0], part, int(in_fo.within(ds.loc[ds.District_S == n, "geometry"].iloc[0]).sum())]
-                              for n, v in A_CHEVAL.items() for (dn, part) in v[1:] if dn == d.Nom_Dept],
+        # FOSA situées dans le département mais rattachées à un district d'un autre département
+        "districts_voisins": [[n, DEP_NAME.get(dk, "?"), None, int(c)] for (n, dk), c in
+                              in_fo[in_fo.dept_ds.notna() & (in_fo.dept_ds != d.k)].groupby(["dfin", "dept_ds"]).size().items()],
+        "fosa_sans_district": int(in_fo.dfin.isna().sum()),
     }
     summary.append(stats)
     buf = poly.buffer(0.02)
@@ -177,10 +196,9 @@ for d in dep.itertuples():
     # FOSA : district et commune d'appartenance (spatial)
     in_fo = in_fo.copy()
     fo_lay_hors = fo_hors.copy()
-    if len(fo_lay_hors):
-        fo_lay_hors["ds"] = gpd.sjoin(fo_lay_hors[["geometry"]], in_ds_geo[["District_S", "geometry"]], how="left", predicate="within").groupby(level=0)["District_S"].first()
-        fo_lay_hors["cm"] = None
-    in_fo["ds"] = gpd.sjoin(in_fo[["geometry"]], in_ds_geo[["District_S", "geometry"]], how="left", predicate="within").groupby(level=0)["District_S"].first()
+    fo_lay_hors["ds"] = fo_lay_hors.dfin
+    fo_lay_hors["cm"] = None
+    in_fo["ds"] = in_fo.dfin
     in_fo["cm"] = gpd.sjoin(in_fo[["geometry"]], in_com[["Nom_commun", "geometry"]], how="left", predicate="within").groupby(level=0)["Nom_commun"].first()
     # --- attributs cliquables : district de santé
     dprops = []
@@ -197,7 +215,7 @@ for d in dep.itertuples():
             "pop": num(g.Pop_2026), "classification": None if not len(row) or pd.isna(r["classification"]) else str(r["classification"]),
             "pop1h": num(r["% Population à 1h FOSA"]) if len(row) else None,
             "communes_couvertes": None if not len(row) or pd.isna(r["communes_couvertes"]) else str(r["communes_couvertes"]).strip().rstrip(","),
-            **fosa_counts(fo[fo.within(g.geometry)]),
+            **fosa_counts(fo[fo.dfin == g.District_S]),
         })
     ds_layer = in_ds_geo.assign(geometry=in_ds_geo.geometry.simplify(tol)).reset_index(drop=True)
     ds_layer = pd.concat([ds_layer[["District_S", "geometry"]], pd.DataFrame(dprops)], axis=1)
@@ -219,13 +237,13 @@ for d in dep.itertuples():
     layers = {
         "communes": fc(gpd.GeoDataFrame(com_layer, geometry="geometry", crs=4326), [c for c in com_layer.columns if c != "geometry"]),
         "districts": fc(gpd.GeoDataFrame(ds_layer, geometry="geometry", crs=4326), [c for c in ds_layer.columns if c != "geometry"]),
-        "fosa": fc(pd.concat([in_fo.assign(hors=0), fo_lay_hors.assign(hors=1)]).rename(columns={"District d": "district", "Aire de sa": "aire"}), ["Fosa", "categorie", "statut_fos", "district", "aire", "ds", "cm", "hors"]),
+        "fosa": fc(pd.concat([in_fo.assign(hors=0), fo_lay_hors.assign(hors=1)]).rename(columns={"District d": "district", "Aire de sa": "aire"}), ["Fosa", "categorie", "statut_fos", "district", "aire", "ds", "cm", "hors", "pv", "dpos"]),
         "routes": fc(r_clip.assign(geometry=r_clip.geometry.simplify(tol / 2)).explode(index_parts=False), ["label_n"]),
         "labels": [[str(n), "c", round(pt.x, 4), round(pt.y, 4)] for n, pt in zip(in_com.Nom_commun, in_com.geometry.representative_point())]
                   + [[str(n), "d", round(pt.x, 4), round(pt.y, 4)] for n, pt in zip(in_ds_geo.District_S, in_ds_geo.geometry.representative_point())],
         "rivieres": fc(w_clip.assign(geometry=w_clip.geometry.simplify(tol / 2)).explode(index_parts=False), ["waterway", "name"]),
     }
-    (OUT / "data" / "dept" / f"{d.slug}.json").write_text(json.dumps(round_coords(layers), ensure_ascii=False, separators=(",", ":")))
+    (OUT / "data" / "v10" / "dept" / f"{d.slug}.json").write_text(json.dumps(round_coords(layers), ensure_ascii=False, separators=(",", ":")))
 
 # national
 depg = dep.assign(geometry=dep.geometry.simplify(0.003))
@@ -233,13 +251,13 @@ nat = fc(depg, ["Nom_Dept", "slug", "region"])
 for f, pt in zip(nat["features"], dep.geometry.representative_point()):
     f["properties"]["lbl"] = [round(pt.x, 4), round(pt.y, 4)]
 pays = gpd.GeoDataFrame(geometry=[dep.union_all().simplify(0.003)], crs=4326)
-(OUT / "data" / "departements.json").write_text(json.dumps(round_coords(nat, 4), ensure_ascii=False, separators=(",", ":")))
-(OUT / "data" / "cameroun.json").write_text(json.dumps(round_coords(fc(pays, []), 4), separators=(",", ":")))
+(OUT / "data" / "v10" / "departements.json").write_text(json.dumps(round_coords(nat, 4), ensure_ascii=False, separators=(",", ":")))
+(OUT / "data" / "v10" / "cameroun.json").write_text(json.dumps(round_coords(fc(pays, []), 4), separators=(",", ":")))
 order = ["Adamaoua", "Centre", "Est", "Extrême-Nord", "Littoral", "Nord", "Nord-Ouest", "Ouest", "Sud", "Sud-Ouest"]
 summary.sort(key=lambda s: (order.index(s["region"]), key(s["nom"])))
-(OUT / "data" / "atlas.json").write_text(json.dumps({"regions": order, "departements": summary}, ensure_ascii=False, separators=(",", ":")))
+(OUT / "data" / "v10" / "atlas.json").write_text(json.dumps({"regions": order, "departements": summary}, ensure_ascii=False, separators=(",", ":")))
 print("Sans correspondance :", UNMATCHED)
-pd.DataFrame([{"district": n, "repartition": "; ".join(f"{a} {b} %" for a, b in v), "rattache_a": v[0][0]} for n, v in sorted(A_CHEVAL.items())]).to_csv(OUT / "data" / "districts_a_cheval.csv", index=False)
+pd.DataFrame([{"district": n, "repartition": "; ".join(f"{a} {b} %" for a, b in v), "rattache_a": v[0][0]} for n, v in sorted(A_CHEVAL.items())]).to_csv(OUT / "data" / "v10" / "districts_a_cheval.csv", index=False)
 tot = pd.DataFrame(summary)
 print(tot.groupby("region")[["fosa", "communes", "districts", "population"]].sum())
 print("TOTAL", tot[["fosa", "communes", "districts", "population"]].sum().to_dict(), "FOSA hors départements:", len(fo) - tot.fosa.sum())

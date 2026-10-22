@@ -6,7 +6,7 @@
   <title>Atlas sanitaire départemental Cameroun</title>
   <meta name="description" content="Storymap de l'atlas sanitaire départemental du Cameroun : formations sanitaires, population et accessibilité, par région et par département.">
   <link href="vendor/maplibre/maplibre-gl.css" rel="stylesheet">
-  <link href="css/style-7.css" rel="stylesheet">
+  <link href="css/style-10.css" rel="stylesheet">
 </head>
 <body>
   <div id="app">
@@ -37,6 +37,7 @@
     <main id="map-wrap">
       <div id="map" role="region" aria-label="Carte"></div>
       <div id="inset" aria-hidden="true"></div>
+      <div id="stale-warning" hidden>Les fichiers de données chargés sont d'une ancienne version : les fiches et les FOSA filtrées peuvent être vides. Mettez à jour le dossier <code>data</code>, puis rechargez la page (Ctrl + F5).</div>
       <div id="focus-bar" hidden><span></span><button id="focus-back" data-i18n="backDept">← Tout le département</button></div>
       <div id="legend" class="open">
         <button id="legend-toggle" aria-expanded="true" data-i18n="legend">Légende</button>
@@ -53,7 +54,7 @@
     </div>
   </div>
   <script src="vendor/maplibre/maplibre-gl.js"></script>
-  <script src="js/i18n-7.js"></script>
-  <script src="js/app-8.js"></script>
+  <script src="js/i18n-10.js"></script>
+  <script src="js/app-11.js"></script>
 </body>
 </html>
