@@ -126,6 +126,11 @@
       map.addLayer({ id: "rivieres", type: "line", source: "rivieres", paint: { "line-color": "#6498d2", "line-width": ["match", ["get", "waterway"], "river", 1.6, 0.8] } });
       map.addLayer({ id: "routes-sec", type: "line", source: "routes", filter: ["==", ["get", "label_n"], "secondary"], paint: { "line-color": "#fdbf6f", "line-width": 1.6 } });
       map.addLayer({ id: "routes-main", type: "line", source: "routes", filter: ["==", ["get", "label_n"], "main road"], paint: { "line-color": "#000000", "line-width": 2.4 } });
+      // zones cliquables (transparentes) et surbrillance de la sélection
+      map.addLayer({ id: "communes-fill", type: "fill", source: "communes", paint: { "fill-color": "#000000", "fill-opacity": 0.01 } });
+      map.addLayer({ id: "districts-fill", type: "fill", source: "districts", paint: { "fill-color": "#000000", "fill-opacity": 0.01 } });
+      map.addLayer({ id: "communes-hl", type: "fill", source: "communes", filter: ["==", ["get", "Nom_commun"], "__aucun__"], paint: { "fill-color": "#28744c", "fill-opacity": 0.16 } });
+      map.addLayer({ id: "districts-hl", type: "line", source: "districts", filter: ["==", ["get", "District_S"], "__aucun__"], paint: { "line-color": "#1f78b4", "line-width": 3.5 } });
       map.addLayer({ id: "communes-line", type: "line", source: "communes", paint: { "line-color": "#28744c", "line-width": 1 } });
       map.addLayer({ id: "districts-line", type: "line", source: "districts", paint: { "line-color": "#000000", "line-width": 1.6, "line-dasharray": [1, 1.6] } });
       map.addLayer({ id: "dept-active", type: "line", source: "depts", filter: ["==", ["get", "slug"], ""], paint: { "line-color": "#000000", "line-width": 2.4, "line-dasharray": [4, 2] } });
@@ -150,6 +155,7 @@
 
       // interactions
       const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "280px" });
+      popup.on("open", () => zonePopup.remove());
       ["fosa-pub", "fosa-priv"].forEach((id) => {
         map.on("click", id, (e) => {
           const p = e.features[0].properties;
@@ -161,6 +167,23 @@
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
       });
+      // clic sur un district de santé / une commune (si aucune FOSA sous le pointeur)
+      map.on("click", (e) => {
+        if (!current.chapter || current.chapter.type !== "dept") return;
+        if (map.queryRenderedFeatures(e.point, { layers: ["fosa-pub", "fosa-priv"] }).length) return;
+        const dist = map.queryRenderedFeatures(e.point, { layers: ["districts-fill"] })[0];
+        const com = map.queryRenderedFeatures(e.point, { layers: ["communes-fill"] })[0];
+        if (!dist && !com) { clearSelection(); return; }
+        showZone(e.lngLat, dist && dist.properties, com && com.properties);
+      });
+      ["districts-fill", "communes-fill"].forEach((id) => {
+        map.on("mousemove", id, () => {
+          if (current.chapter && current.chapter.type === "dept") map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
+      });
+      zonePopup.on("close", () => highlight(null, null));
+
       let hovered = null;
       map.on("mousemove", "dept-choro", (e) => {
         if (current.chapter && current.chapter.type === "dept") return;
@@ -284,6 +307,12 @@
     const chapters = region ? [regionChapter(region, depts), ...depts.map(deptChapter)] : [nationalChapter()];
     chaptersEl.innerHTML = chapters.map((c) => c.html).join("");
     chaptersEl.querySelectorAll("[data-goto-region]").forEach((el) => el.addEventListener("click", () => selectRegion(el.dataset.gotoRegion, null, true)));
+    chaptersEl.querySelectorAll("tr[data-zone]").forEach((el) => el.addEventListener("click", () => {
+      const sec = el.closest(".chapter");
+      if (current.chapter && current.chapter.id !== sec.id) scrollToChapter(sec.id);
+      const go = () => focusZone(el.dataset.zone, el.dataset.name);
+      currentData && current.chapter.id === sec.id ? go() : setTimeout(go, 900);
+    }));
     chaptersEl.querySelectorAll("[data-goto-dept]").forEach((el) => el.addEventListener("click", () => scrollToChapter("dept-" + el.dataset.gotoDept)));
     const byId = {};
     chapters.forEach((c) => (byId[c.id] = c));
@@ -378,8 +407,8 @@
     const tdist = d.tab_districts;
     const tcom = d.tab_communes;
     const sumCol = (rows, i) => rows.reduce((a, r) => a + (typeof r[i] === "number" ? r[i] : 0), 0);
-    const distRows = tdist.map((r) => `<tr><td>${esc(r[0])}</td><td>${nf(r[1])}</td><td>${nf(r[2])}</td><td>${nf(r[3])}</td><td>${nf(r[4])}</td><td>${nf(r[5])}</td><td>${nf(r[6])}</td><td>${esc(r[7] || "–")}</td><td>${pct(r[8])}</td><td class="txt">${esc(r[9] || "–")}</td></tr>`).join("");
-    const comRows = tcom.map((r) => `<tr><td>${esc(r[0])}</td>${r.slice(1).map((v) => `<td>${nf(v)}</td>`).join("")}</tr>`).join("");
+    const distRows = tdist.map((r) => `<tr class="clickable" data-zone="d" data-name="${esc(r[0])}"><td>${esc(r[0])}</td><td>${nf(r[1])}</td><td>${nf(r[2])}</td><td>${nf(r[3])}</td><td>${nf(r[4])}</td><td>${nf(r[5])}</td><td>${nf(r[6])}</td><td>${esc(r[7] || "–")}</td><td>${pct(r[8])}</td><td class="txt">${esc(r[9] || "–")}</td></tr>`).join("");
+    const comRows = tcom.map((r) => `<tr class="clickable" data-zone="c" data-name="${esc(r[0])}"><td>${esc(r[0])}</td>${r.slice(1).map((v) => `<td>${nf(v)}</td>`).join("")}</tr>`).join("");
     const comTotal = tcom.length > 1 ? `<tr class="total"><td>Total</td>${[1, 2, 3, 4, 5, 6].map((i) => `<td>${nf(sumCol(tcom, i))}</td>`).join("")}</tr>` : "";
     const distTotal = tdist.length > 1 ? `<tr class="total"><td>Total</td><td>${nf(sumCol(tdist, 1))}</td>${[2, 3, 4, 5, 6].map((i) => `<td>${nf(sumCol(tdist, i))}</td>`).join("")}<td></td><td></td><td></td></tr>` : "";
     const p1 = typeof d.pop1h === "number" ? d.pop1h : null;
@@ -396,11 +425,13 @@
           <div class="kpi wide"><div class="l">Proportion de la population à 1 heure d'une FOSA</div><div class="v">${pct(p1)}</div>
             <div class="bar"><span style="width:${p1 ?? 0}%;background:${accessColor(p1)}"></span></div></div>
         </div>
+        <p class="note">Cliquez sur un district ou une commune (sur la carte, sur son nom ou dans les tableaux) pour afficher sa fiche.</p>
         <h3>Formations sanitaires par district de santé (2026)</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>District de santé</th><th>Population 2026 (hab.)</th><th>FOSA publiques</th><th>HR/HRA</th><th>HD</th><th>CMA</th><th>CSI/ Infirmerie</th><th>Classification</th><th>% pop. à 1 h</th><th>Communes couvertes</th></tr></thead>
           <tbody>${distRows || `<tr><td colspan="10">Aucune donnée</td></tr>`}${distTotal}</tbody>
         </table></div>
+        ${tdist.length && sumCol(tdist, 2) !== d.fosa_publiques ? `<p class="note" style="margin-top:6px">Le total des FOSA publiques par district (${nf(sumCol(tdist, 2))}) diffère de celui du département (${nf(d.fosa_publiques)}) : un district de santé peut s'étendre sur plusieurs départements, il est rattaché ici à un seul.</p>` : ""}
         <h3>Formations sanitaires par commune (2026)</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>Commune</th><th>FOSA publiques</th><th title="FOSA privées laïques et confessionnelles">FOSA privées</th><th>HR/HRA</th><th>HD</th><th>CMA</th><th>CSI/ Infirmerie</th></tr></thead>
@@ -430,6 +461,8 @@
       map.fitBounds([[d.bbox[0], d.bbox[1]], [d.bbox[2], d.bbox[3]]], { padding: pad, duration: 1400, maxZoom: 12 });
       loadDept(d.slug).then((data) => {
         if (current.chapter !== ch) return;
+        currentData = data;
+        clearSelection();
         ["communes", "districts", "fosa", "routes", "rivieres"].forEach((k) => map.getSource(k).setData(data[k]));
         setLabels(data.labels.filter((l) => l[1] === "d").concat(data.labels.filter((l) => l[1] === "c")));
       });
@@ -458,9 +491,61 @@
     }
   }
 
+  // ---------- sélection d'un district / d'une commune ----------
+  const zonePopup = new maplibregl.Popup({ closeButton: true, maxWidth: "320px", className: "zone-popup" });
+  let currentData = null;
+
+  function highlight(district, commune) {
+    if (!map || !mapReady) return;
+    map.setFilter("districts-hl", ["==", ["get", "District_S"], district || "__aucun__"]);
+    map.setFilter("communes-hl", ["==", ["get", "Nom_commun"], commune || "__aucun__"]);
+  }
+  function clearSelection() {
+    zonePopup.remove();
+    highlight(null, null);
+  }
+  const row = (l, v) => `<tr><th>${l}</th><td>${v}</td></tr>`;
+  function districtHtml(p) {
+    return `<div class="zp-kind">District de santé</div><div class="zp-name">${esc(p.District_S)}</div><table class="zp">` +
+      row("Population 2026", nf(p.pop) + " hab.") +
+      row("Classification", esc(p.classification || "–")) +
+      row("Population à 1 h d'une FOSA", pct(p.pop1h)) +
+      row("FOSA (total)", `${nf(p.nb_fosa)} <span class="zp-s">(${nf(p.nb_pub)} publiques · ${nf(p.nb_priv)} privées)</span>`) +
+      row("HR / HRA · HD", `${nf(p.hr_hra)} · ${nf(p.hd)}`) +
+      row("CMA · CSI / infirmerie", `${nf(p.cma)} · ${nf(p.csi)}`) +
+      row("Communes couvertes", esc(p.communes_couvertes || "–")) + "</table>";
+  }
+  function communeHtml(p) {
+    return `<div class="zp-kind c">Commune</div><div class="zp-name">${esc(p.Nom_commun)}</div><table class="zp">` +
+      row("FOSA (total)", nf(p.nb_fosa)) +
+      row("Publiques · privées", `${nf(p.public)} · ${nf(p.prive)}`) +
+      row("HR / HRA · HD", `${nf(p.hr_hra)} · ${nf(p.hd)}`) +
+      row("CMA · CSI / infirmerie", `${nf(p.cma)} · ${nf(p.csi)}`) + "</table>";
+  }
+  function showZone(lngLat, dist, com) {
+    highlight(dist && dist.District_S, com && com.Nom_commun);
+    const parts = [dist && districtHtml(dist), com && communeHtml(com)].filter(Boolean);
+    zonePopup.setLngLat(lngLat).setHTML(parts.join('<hr class="zp-sep">')).addTo(map);
+  }
+  // depuis les tableaux du récit : centrer la carte sur la zone et ouvrir sa fiche
+  function focusZone(kind, name) {
+    if (!currentData) return;
+    const src = kind === "d" ? currentData.districts : currentData.communes;
+    const key = kind === "d" ? "District_S" : "Nom_commun";
+    const f = src.features.find((x) => x.properties[key] === name);
+    const lbl = currentData.labels.find((l) => l[1] === kind && l[0] === name);
+    if (!f || !lbl) return;
+    const b = new maplibregl.LngLatBounds();
+    const walk = (c) => (typeof c[0] === "number" ? b.extend(c) : c.forEach(walk));
+    walk(f.geometry.coordinates);
+    map.fitBounds(b, { padding: isMobile() ? 20 : 80, duration: 900, maxZoom: 13 });
+    showZone({ lng: lbl[2], lat: lbl[3] }, kind === "d" ? f.properties : null, kind === "c" ? f.properties : null);
+  }
+
   function setDeptLayers(on, d) {
     const vis = on ? "visible" : "none";
-    ["rivieres", "routes-sec", "routes-main", "communes-line", "districts-line", "dept-active", "fosa-priv", "fosa-priv-dot", "fosa-pub"]
+    if (!on) clearSelection();
+    ["rivieres", "routes-sec", "routes-main", "communes-fill", "districts-fill", "communes-hl", "districts-hl", "communes-line", "districts-line", "dept-active", "fosa-priv", "fosa-priv-dot", "fosa-pub"]
       .forEach((id) => map.setLayoutProperty(id, "visibility", vis));
     map.setLayoutProperty("dept-choro", "visibility", on ? "none" : "visible");
     map.setLayoutProperty("dept-choro-line", "visibility", on ? "none" : "visible");
@@ -477,6 +562,11 @@
       const el = document.createElement("div");
       el.className = "map-label " + kind;
       el.textContent = txt;
+      if (kind === "d" || kind === "c") {          // étiquette cliquable : ouvre la fiche
+        el.classList.add("clic");
+        el.title = kind === "d" ? "Voir le district de santé" : "Voir la commune";
+        el.addEventListener("click", (ev) => { ev.stopPropagation(); focusZone(kind, txt); });
+      }
       return new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([x, y]).addTo(map);
     });
     declutter();

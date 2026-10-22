@@ -164,3 +164,17 @@ tr.clickable:hover td { background: var(--accent-soft); }
 .map-label.d { color: #000; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
 .map-label.p { color: #1d2a24; font-size: 13px; }
 .map-label.hidden { visibility: hidden; }
+
+/* fiche d'un district / d'une commune */
+.zone-popup .maplibregl-popup-content { padding: 12px 14px 10px; }
+.zp-kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #1f78b4; }
+.zp-kind.c { color: var(--accent); }
+.zp-name { font-size: 16px; font-weight: 800; margin: 1px 0 6px; }
+table.zp { font-size: 12.5px; width: 100%; }
+table.zp th, table.zp td { padding: 3px 0; border: 0; background: none; position: static; text-align: left; white-space: normal; min-width: 0; }
+table.zp th { font-weight: 400; color: var(--muted); padding-right: 10px; }
+table.zp td { font-weight: 700; text-align: right; }
+.zp-s { font-weight: 400; color: var(--muted); }
+.zp-sep { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+.map-label.clic { pointer-events: auto; cursor: pointer; }
+.map-label.clic:hover { text-decoration: underline; }

@@ -9,7 +9,7 @@ SRC = Path(sys.argv[1]); OUT = Path(sys.argv[2])
 def key(s):
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
     s = re.sub(r"[^a-z0-9]", "", s)
-    return {"mafouetafamba": "mefouetafamba"}.get(s, s)
+    return {"mafouetafamba": "mefouetafamba", "malentouen": "malantouen"}.get(s, s)
 
 def slug(s):
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
@@ -34,10 +34,18 @@ dep["slug"] = dep.Nom_Dept.map(slug)
 ds = gpd.read_file(SRC / "District_S.shp").to_crs(4326)
 dx = pd.read_excel(SRC / "districts.xlsx")
 dx["k"] = dx.Nom_Dept.map(key)
+dx["kd"] = dx.District_S.map(key)
 cb = pd.read_excel(SRC / "commune_bis.xlsx")
 cb["k"] = cb.Nom_Dept.map(key)
+cb["kc"] = cb.Nom_commun.map(key)
+UNMATCHED = {"districts": [], "communes": []}
 fo = gpd.read_file(SRC / "fosa_fonc_privee.shp", columns=["Fosa", "categorie", "statut_fos", "District d", "Aire de sa"]).to_crs(4326)
 fo = fo[fo.geometry.notna()]
+# la couche contient des doublons (même identifiant, même position) : on ne garde qu'une ligne par FOSA
+fo_ids = gpd.read_file(SRC / "fosa_fonc_privee.shp", columns=["id"]).loc[fo.index, "id"]
+n_avant = len(fo)
+fo = fo[~fo_ids.duplicated()]
+print(f"FOSA : {n_avant} lignes, {n_avant - len(fo)} doublons supprimés -> {len(fo)}")
 
 # --- indicateurs (mêmes expressions que la mise en page : within(point_on_surface, @atlas_geometry))
 def count_within(gdf, poly, pos=True):
@@ -94,9 +102,43 @@ for d in dep.itertuples():
     r_clip = gpd.clip(routes[routes.intersects(buf)], buf)
     w_clip = gpd.clip(rivers[rivers.intersects(buf)], buf)
     tol = 0.0004
+    # --- attributs cliquables : district de santé
+    dprops = []
+    for _, g in in_ds_geo.iterrows():
+        sel = in_fo[in_fo.within(g.geometry)]
+        row = dx[(dx.kd == key(g.District_S)) & (dx.k == d.k)]
+        if row.empty:
+            row = dx[dx.kd == key(g.District_S)]
+        if row.empty:
+            UNMATCHED["districts"].append(g.District_S)
+        r = row.iloc[0] if len(row) else {}
+        dprops.append({
+            "pop": num(g.Pop_2026), "classification": None if not len(row) or pd.isna(r["classification"]) else str(r["classification"]),
+            "pop1h": num(r["% Population à 1h FOSA"]) if len(row) else None,
+            "communes_couvertes": None if not len(row) or pd.isna(r["communes_couvertes"]) else str(r["communes_couvertes"]).strip().rstrip(","),
+            "nb_fosa": int(len(sel)), "nb_pub": int(sel.statut_fos.isin(["public", "parapublic"]).sum()),
+            "nb_priv": int(sel.statut_fos.isin(["prive_laic", "prive_confessionnel"]).sum()),
+            **{c: (num(r[c]) if len(row) else None) for c in ("hr_hra", "hd", "cma", "csi")},
+        })
+    ds_layer = in_ds_geo.assign(geometry=in_ds_geo.geometry.simplify(tol)).reset_index(drop=True)
+    ds_layer = pd.concat([ds_layer[["District_S", "geometry"]], pd.DataFrame(dprops)], axis=1)
+    # --- attributs cliquables : commune
+    cprops = []
+    for _, g in in_com.iterrows():
+        sel = in_fo[in_fo.within(g.geometry)]
+        row = cb[(cb.kc == key(g.Nom_commun)) & (cb.k == d.k)]
+        if row.empty:
+            UNMATCHED["communes"].append(g.Nom_commun)
+        r = row.iloc[0] if len(row) else {}
+        cprops.append({
+            "departement": d.Nom_Dept, "nb_fosa": int(len(sel)),
+            **{c: (num(r[c]) if len(row) else None) for c in ("public", "prive", "hr_hra", "hd", "cma", "csi")},
+        })
+    com_layer = in_com.assign(geometry=in_com.geometry.simplify(tol)).reset_index(drop=True)
+    com_layer = pd.concat([com_layer[["Nom_commun", "geometry"]], pd.DataFrame(cprops)], axis=1)
     layers = {
-        "communes": fc(in_com.assign(geometry=in_com.geometry.simplify(tol)), ["Nom_commun"]),
-        "districts": fc(in_ds_geo.assign(geometry=in_ds_geo.geometry.simplify(tol)), ["District_S"]),
+        "communes": fc(gpd.GeoDataFrame(com_layer, geometry="geometry", crs=4326), [c for c in com_layer.columns if c != "geometry"]),
+        "districts": fc(gpd.GeoDataFrame(ds_layer, geometry="geometry", crs=4326), [c for c in ds_layer.columns if c != "geometry"]),
         "fosa": fc(in_fo.rename(columns={"District d": "district", "Aire de sa": "aire"}), ["Fosa", "categorie", "statut_fos", "district", "aire"]),
         "routes": fc(r_clip.assign(geometry=r_clip.geometry.simplify(tol / 2)).explode(index_parts=False), ["label_n"]),
         "labels": [[str(n), "c", round(pt.x, 4), round(pt.y, 4)] for n, pt in zip(in_com.Nom_commun, in_com.geometry.representative_point())]
@@ -116,6 +158,7 @@ pays = gpd.GeoDataFrame(geometry=[dep.union_all().simplify(0.003)], crs=4326)
 order = ["Adamaoua", "Centre", "Est", "Extrême-Nord", "Littoral", "Nord", "Nord-Ouest", "Ouest", "Sud", "Sud-Ouest"]
 summary.sort(key=lambda s: (order.index(s["region"]), key(s["nom"])))
 (OUT / "data" / "atlas.json").write_text(json.dumps({"regions": order, "departements": summary}, ensure_ascii=False, separators=(",", ":")))
+print("Sans correspondance :", UNMATCHED)
 tot = pd.DataFrame(summary)
 print(tot.groupby("region")[["fosa", "communes", "districts", "population"]].sum())
 print("TOTAL", tot[["fosa", "communes", "districts", "population"]].sum().to_dict(), "FOSA hors départements:", len(fo) - tot.fosa.sum())
