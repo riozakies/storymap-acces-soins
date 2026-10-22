@@ -34,4 +34,4 @@ puis déposer les fichiers modifiés de `data/` dans le dépôt.
 - Le raster de population WorldPop n'était pas dans le dossier du projet : il n'est pas affiché.
 - Fond de carte : Esri World Topographic (comme dans le projet QGIS).
 
-Source : Cellule des Informations Sanitaires (CIS), MINSANTE.
+Sources : Direction de l'Organisation des Soins et de la Technologie Sanitaires,Cellule des Informations Sanitaires (CIS).
